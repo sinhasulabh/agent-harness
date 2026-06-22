@@ -1,14 +1,25 @@
 # Log Analyzer
 
-Reads a structured log CSV, sends a **random number of log lines** to an LLM, and
-gets back a structured root-cause analysis as JSON:
+Reads a structured log CSV, sends a **random number of log lines** to an LLM,
+gets back a structured root-cause analysis, and **validates the model's cited
+evidence against the source CSV** before returning it as JSON:
 
 ```json
 {
-  "severity": "high",
-  "suspected_cause": "mod_jk worker repeatedly entering error state",
-  "evidence_line_ids": [1402, 1403, 1404],
-  "next_step": "Restart the jk2 worker and check workers2.properties config"
+  "analysis": {
+    "severity": "high",
+    "suspected_cause": "mod_jk worker repeatedly entering error state",
+    "evidence_line_ids": [1402, 1403, 1404],
+    "next_step": "Restart the jk2 worker and check workers2.properties config"
+  },
+  "validation": {
+    "is_valid": true,
+    "cited_line_ids": [1402, 1403, 1404],
+    "grounded_line_ids": [1402, 1403, 1404],
+    "out_of_sample_line_ids": [],
+    "unknown_line_ids": [],
+    "issues": []
+  }
 }
 ```
 
@@ -54,12 +65,31 @@ Or set the default permanently in `config.yaml`:
 provider: nvidia
 ```
 
-The JSON analysis prints to stdout; a one-line run summary (provider, model, which
-LineIds were sampled) prints to stderr, so you can pipe the JSON cleanly:
+The JSON (analysis + validation) prints to stdout; a short run summary — provider,
+model, sampled LineIds, and a `validation=PASSED/FAILED` line — prints to stderr,
+so you can pipe the JSON cleanly:
 
 ```bash
 uv run log-analyzer --provider claude > analysis.json
 ```
+
+## Validating the analysis
+
+The model is asked to cite the `LineId` values that support its conclusion
+(`evidence_line_ids`). After each run, those citations are checked against the
+actual log rows so a fluent-but-fabricated answer doesn't slip through. Each
+cited LineId is graded into one of three buckets:
+
+| Bucket | Meaning |
+| ------ | ------- |
+| `grounded_line_ids` | Cited **and** present in the batch shown to the model — what we want |
+| `out_of_sample_line_ids` | Exists in the CSV, but wasn't in the lines sent — the model reached beyond its input |
+| `unknown_line_ids` | Not found anywhere in the CSV — a fabricated LineId |
+
+`is_valid` is `true` only when the model cited at least one line and **every**
+citation is grounded. On failure, `issues` explains why, and the stderr summary
+shows `validation=FAILED`. The run still exits `0` — the analysis is returned
+with the validation verdict attached rather than being suppressed.
 
 ## Configuring the sample size
 
@@ -90,7 +120,8 @@ log_analyzer/
 ├── log_reader.py        # reads the CSV and samples a random batch
 ├── models.py            # LogAnalysis — the shared response schema (Pydantic)
 ├── prompts.py           # shared system/user prompts
-├── analyzer.py          # read -> sample -> analyze orchestration
+├── validation.py        # grounds the model's cited LineIds against the CSV
+├── analyzer.py          # read -> sample -> analyze -> validate orchestration
 ├── main.py              # CLI entry point
 └── providers/
     ├── base.py          # LLMProvider interface

@@ -2,10 +2,12 @@
 
 ## Purpose
 
-A CLI that samples a random batch of lines from a structured log CSV and asks
-an LLM to return a **schema-validated root-cause analysis**. The same task can
-be run against any of three providers — **Claude**, **Gemini**, or **NVIDIA NIM
-(Kimi K2)** — chosen at runtime, so they can be compared on identical input.
+A CLI that samples a random batch of lines from a structured log CSV, asks an
+LLM to return a **schema-validated root-cause analysis**, and then **checks the
+model's cited evidence against the source CSV** before returning it. The same
+task can be run against any of three providers — **Claude**, **Gemini**, or
+**NVIDIA NIM (Kimi K2)** — chosen at runtime, so they can be compared on
+identical input.
 
 ## Design goals
 
@@ -15,7 +17,9 @@ be run against any of three providers — **Claude**, **Gemini**, or **NVIDIA NI
    Pydantic model, regardless of how that provider achieves structured output.
 3. **Fair comparison** — the system prompt, user prompt, and sampled log batch
    are identical across providers; only the model call differs.
-4. **Pay only for what you use** — provider SDKs are imported lazily, so you
+4. **Grounded output** — the model's cited evidence is verified against the
+   actual log rows, so a fluent-but-fabricated answer is flagged, not trusted.
+5. **Pay only for what you use** — provider SDKs are imported lazily, so you
    need just the SDK (and key) for the provider you actually run.
 
 ## High-level architecture
@@ -29,8 +33,8 @@ be run against any of three providers — **Claude**, **Gemini**, or **NVIDIA NI
                   └────────┬─────────┘
                            ▼
                   ┌──────────────────┐
-                  │  analyzer.py     │  orchestrates: read → sample → analyze
-                  │  run_analysis()  │  returns AnalysisRun
+                  │  analyzer.py     │  orchestrates: read → sample →
+                  │  run_analysis()  │  analyze → validate; returns AnalysisRun
                   └───┬───────────┬──┘
             ┌─────────┘           └──────────┐
             ▼                                ▼
@@ -50,6 +54,12 @@ be run against any of three providers — **Claude**, **Gemini**, or **NVIDIA NI
                   ▲                │  │    │          │            │
                   └────────────────┴──┴────┴──────────┴────────────┘
                        all return a validated LogAnalysis
+                                   │
+                                   ▼
+                          ┌──────────────────┐
+                          │  validation.py   │  ground cited LineIds
+                          │ validate_analysis│  against the CSV rows
+                          └──────────────────┘  → ValidationResult
 ```
 
 ## Core flow
@@ -66,8 +76,11 @@ linear pipeline:
    `[LineId] <Time> <Level> <Content>` so the model can cite line IDs.
 4. **Analyze** — [`get_provider`](log_analyzer/providers/__init__.py#L9)
    constructs the chosen provider and calls `.analyze(log_text)`.
-5. **Return** — results are wrapped in an `AnalysisRun` dataclass (provider,
-   model, sampled line IDs, count, and the `LogAnalysis`).
+5. **Validate** — [`validate_analysis`](log_analyzer/validation.py) grounds the
+   model's cited `evidence_line_ids` against both the sampled rows and the full
+   CSV (see below).
+6. **Return** — results are wrapped in an `AnalysisRun` dataclass (provider,
+   model, sampled line IDs, count, the `LogAnalysis`, and the `ValidationResult`).
 
 ## Key abstractions
 
@@ -113,6 +126,31 @@ Claude and Gemini constrain the model natively; NVIDIA falls back to a
 prompt-level contract because the OpenAI-compatible endpoint can't enforce an
 arbitrary schema. All three converge on a validated `LogAnalysis`.
 
+## Grounding validation — [validation.py](log_analyzer/validation.py)
+
+Schema validation guarantees the response has the right *shape*; it says nothing
+about whether the content is *true*. The model cites `evidence_line_ids` to back
+its conclusion, so the cheapest meaningful accuracy check is to confirm those
+citations are real — the model should only cite lines it was actually shown.
+
+`validate_analysis(analysis, sampled_rows, all_rows)` grades each cited LineId
+into one of three buckets by comparing it to the source rows:
+
+| Bucket | Condition | Interpretation |
+|---|---|---|
+| `grounded_line_ids` | in the sampled batch | Cited evidence the model was shown — good |
+| `out_of_sample_line_ids` | in the full CSV, not in the sample | Model referenced beyond its input |
+| `unknown_line_ids` | absent from the CSV entirely | Fabricated LineId |
+
+Passing **both** the sampled rows and the full CSV is what lets it tell an
+out-of-sample reference apart from a hallucination. `is_valid` is true only when
+≥1 line was cited and all citations are grounded; `issues` explains any failure.
+
+This is deliberately a **non-blocking** check: a failed validation is attached to
+the result and surfaced, but does not raise or change the exit code — the tool
+reports the verdict rather than suppressing a suspect analysis. Tightening this
+to a hard failure (e.g. a `--strict` flag) is a natural future extension.
+
 ## Configuration — [config.py](log_analyzer/config.py) + `config.yaml`
 
 - `config.yaml` holds non-secret settings: `provider`, `log_file`, `sampling`
@@ -127,10 +165,16 @@ arbitrary schema. All three converge on a validated `LogAnalysis`.
 
 ## Output
 
-[main.py](log_analyzer/main.py) prints a metadata line to **stderr**
-(`provider`, `model`, sampled count, LineIds) and the JSON analysis to
-**stdout** — so the structured result can be piped while the run context stays
-visible. Errors are surfaced as a clean `Error: …` message with a non-zero exit.
+[main.py](log_analyzer/main.py) prints run metadata to **stderr** (`provider`,
+`model`, sampled count, LineIds, and a `validation=PASSED/FAILED` line with any
+issues) and a JSON object to **stdout** — so the structured result can be piped
+while the run context stays visible. The stdout payload has two keys:
+
+```json
+{ "analysis": { ...LogAnalysis... }, "validation": { ...ValidationResult... } }
+```
+
+Errors are surfaced as a clean `Error: …` message with a non-zero exit.
 
 ## Extension points
 

@@ -55,7 +55,34 @@ def main() -> int:
         f"(LineIds: {', '.join(run.sampled_line_ids)})",
         file=sys.stderr,
     )
-    print(json.dumps(run.analysis.model_dump(), indent=2))
+
+    validation = run.validation
+    status = "PASSED" if validation.is_valid else "FAILED"
+    print(
+        f"# validation={status} "
+        f"grounded={len(validation.grounded_line_ids)}/{len(validation.cited_line_ids)} "
+        f"cited evidence LineId(s)",
+        file=sys.stderr,
+    )
+    for issue in validation.issues:
+        print(f"#   - {issue}", file=sys.stderr)
+
+    print(
+        json.dumps(
+            {
+                "analysis": run.analysis.model_dump(),
+                "validation": {
+                    "is_valid": validation.is_valid,
+                    "cited_line_ids": validation.cited_line_ids,
+                    "grounded_line_ids": validation.grounded_line_ids,
+                    "out_of_sample_line_ids": validation.out_of_sample_line_ids,
+                    "unknown_line_ids": validation.unknown_line_ids,
+                    "issues": validation.issues,
+                },
+            },
+            indent=2,
+        )
+    )
     return 0
 
 
