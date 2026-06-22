@@ -9,7 +9,7 @@ dependencies = [
     "PyYAML>=6.0",
     "python-dotenv>=1.0",
     # LLM provider SDKs
-    "anthropic>=0.49",     # Claude
+    "anthropic==0.111.0",  # Claude
     "google-genai>=1.0",   # Gemini
     "openai>=1.40",        # NVIDIA NIM (Kimi K2) via OpenAI-compatible endpoint
 ]

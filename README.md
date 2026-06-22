@@ -18,7 +18,7 @@ You can switch between three providers:
 | -------- | --------------------------- | ----------------------------------------------- |
 | `claude` | `claude-opus-4-8`           | Official Anthropic SDK (structured outputs)     |
 | `gemini` | `gemini-2.5-flash`          | `google-genai` (native response schema)         |
-| `nvidia` | `moonshotai/kimi-k2-instruct` | NVIDIA NIM, OpenAI-compatible endpoint (Kimi K2) |
+| `nvidia` | `moonshotai/kimi-k2.6` | NVIDIA NIM, OpenAI-compatible endpoint (Kimi K2) |
 
 ## Setup (uv)
 
@@ -51,7 +51,7 @@ uv run log-analyzer --provider nvidia
 Or set the default permanently in `config.yaml`:
 
 ```yaml
-provider: claude
+provider: nvidia
 ```
 
 The JSON analysis prints to stdout; a one-line run summary (provider, model, which
@@ -107,7 +107,7 @@ Subclass `LLMProvider` in `log_analyzer/providers/`, implement `name` and
 
 ## Notes
 
-- The default `nvidia` model id is `moonshotai/kimi-k2-instruct` (Kimi K2 on NVIDIA
+- The default `nvidia` model id is `moonshotai/kimi-k2.6` (Kimi K2 on NVIDIA
   NIM). If you have access to a different Kimi build/version, set its exact id under
   `models.nvidia` in `config.yaml`.
 - `evidence_line_ids` refer to the `LineId` column in the CSV.

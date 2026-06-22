@@ -14,9 +14,11 @@ build/
 .claude/settings.local.json
 
 # Data files — logs may contain IPs, hostnames, paths, or PII.
-# Users supply their own; nothing under data formats is committed.
+# Users supply their own; real logs are not committed.
 *.log
 *.csv
+# ...except the public LogHub Apache_2k sample, kept so the project runs out of the box.
+!sample.csv
 
 # macOS
 .DS_Store

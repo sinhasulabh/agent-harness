@@ -1,8 +1,8 @@
 # Which provider to use: claude | gemini | nvidia
-provider: gemini
+provider: nvidia
 
 # Path to the structured log CSV (relative to project root or absolute)
-log_file: Apache_2k.log_structured.csv
+log_file: sample.csv
 
 # How many log lines to pull from the file each run.
 # A random count is chosen in [min_size, max_size]; that's the "random number
