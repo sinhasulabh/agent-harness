@@ -1,0 +1,22 @@
+# Secrets / environment
+.env
+
+# Python / build
+.venv/
+__pycache__/
+*.pyc
+.uv/
+dist/
+build/
+*.egg-info/
+
+# Local Claude Code settings (personal/machine-specific)
+.claude/settings.local.json
+
+# Data files — logs may contain IPs, hostnames, paths, or PII.
+# Users supply their own; nothing under data formats is committed.
+*.log
+*.csv
+
+# macOS
+.DS_Store

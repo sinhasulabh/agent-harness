@@ -1,0 +1,24 @@
+# Which provider to use: claude | gemini | nvidia
+provider: gemini
+
+# Path to the structured log CSV (relative to project root or absolute)
+log_file: Apache_2k.log_structured.csv
+
+# How many log lines to pull from the file each run.
+# A random count is chosen in [min_size, max_size]; that's the "random number
+# of log data" sent to the LLM. Tune these to adjust the sample size.
+sampling:
+  min_size: 1
+  max_size: 25
+  strategy: contiguous   # contiguous = a random consecutive window (keeps events correlated)
+                         # random     = a random scatter of individual lines
+  seed: null             # set an int for reproducible sampling, null for fresh randomness
+
+# Model id per provider. Switch `provider` above to change which one runs.
+models:
+  claude: claude-opus-4-8
+  gemini: gemini-2.5-flash
+  nvidia: moonshotai/kimi-k2.6   # Kimi K2 served on NVIDIA NIM
+
+# Max output tokens for the LLM response
+max_tokens: 4096
