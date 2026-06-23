@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 
 from dotenv import load_dotenv
@@ -31,7 +32,23 @@ def main() -> int:
     parser.add_argument(
         "--max-size", type=int, help="Override sampling.max_size for this run."
     )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Log each step of the analysis (incl. the Claude tool loop) to stderr.",
+    )
     args = parser.parse_args()
+
+    if args.verbose:
+        # Show our package's per-step DEBUG logs, but keep noisy third-party
+        # loggers (httpx, anthropic) quiet by leaving the root level at WARNING.
+        logging.basicConfig(
+            level=logging.WARNING,
+            stream=sys.stderr,
+            format="%(levelname)s %(name)s: %(message)s",
+        )
+        logging.getLogger("log_analyzer").setLevel(logging.DEBUG)
 
     load_dotenv()  # pull API keys from a local .env if present
 
@@ -49,14 +66,15 @@ def main() -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
+    validation = run.validation
     print(
         f"# provider={run.provider} model={run.model} "
+        f"tools={'on' if validation.tools_used else 'off'} "
         f"sampled={run.sample_count} line(s) "
         f"(LineIds: {', '.join(run.sampled_line_ids)})",
         file=sys.stderr,
     )
 
-    validation = run.validation
     status = "PASSED" if validation.is_valid else "FAILED"
     print(
         f"# validation={status} "
@@ -73,6 +91,7 @@ def main() -> int:
                 "analysis": run.analysis.model_dump(),
                 "validation": {
                     "is_valid": validation.is_valid,
+                    "tools_used": validation.tools_used,
                     "cited_line_ids": validation.cited_line_ids,
                     "grounded_line_ids": validation.grounded_line_ids,
                     "out_of_sample_line_ids": validation.out_of_sample_line_ids,

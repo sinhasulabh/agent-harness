@@ -14,6 +14,23 @@ SYSTEM_PROMPT = (
     "Be precise and actionable."
 )
 
+# Appended to SYSTEM_PROMPT when the provider runs in tool mode. It overrides the
+# "only on the lines provided" instruction above, since tools let the model reach
+# the rest of the file.
+TOOL_SYSTEM_SUFFIX = (
+    "\n\nThe batch above is a small random sample of a larger log file. You have "
+    "tools to investigate the rest of the file before concluding:\n"
+    "- grep_logs(pattern, level?): search every line's Content by regex, "
+    "optionally filtered by level.\n"
+    "- get_window(center_line_id, n): see the n lines before and after a LineId "
+    "for context around an event.\n"
+    "- count_by_level(start?, end?): get a level histogram, optionally over a "
+    "LineId range.\n\n"
+    "Use these tools to confirm or refine your hypothesis, then stop calling tools "
+    "and give your final analysis. You may cite any LineId you discovered via the "
+    "tools in evidence_line_ids — not just lines from the original sample."
+)
+
 
 def schema_hint() -> str:
     """A compact JSON-schema description, for providers without native schema support."""

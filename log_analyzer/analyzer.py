@@ -8,6 +8,7 @@ from .config import Config
 from .log_reader import format_logs, read_logs, sample_logs
 from .models import LogAnalysis
 from .providers import get_provider
+from .tools import LogToolkit
 from .validation import ValidationResult, validate_analysis
 
 
@@ -29,10 +30,15 @@ def run_analysis(config: Config, provider_name: str | None = None) -> AnalysisRu
     log_text = format_logs(sampled)
 
     provider = get_provider(provider_name, config)
-    analysis = provider.analyze(log_text)
+    # The toolkit exposes the full log file; tool-capable providers explore it,
+    # plain providers ignore it and analyze only the sampled lines.
+    toolkit = LogToolkit(rows)
+    analysis = provider.analyze(log_text, toolkit)
 
-    # Verify the model's cited evidence is grounded in the actual log rows.
-    validation = validate_analysis(analysis, sampled, rows)
+    # Verify the model's cited evidence is grounded in the actual log rows. With
+    # tools, the model may legitimately cite lines beyond the sample, so grounding
+    # is relaxed to the whole file.
+    validation = validate_analysis(analysis, sampled, rows, tools_used=provider.uses_tools)
 
     return AnalysisRun(
         provider=provider_name,

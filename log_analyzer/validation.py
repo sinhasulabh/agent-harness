@@ -28,19 +28,31 @@ class ValidationResult:
     grounded_line_ids: list[int]
     out_of_sample_line_ids: list[int]
     unknown_line_ids: list[int]
+    #: Whether the model had log-exploration tools. When True, citing a line from
+    #: outside the sampled batch is legitimate (it was looked up), so out-of-sample
+    #: citations no longer count against validity — only fabricated ones do.
+    tools_used: bool = False
 
     @property
     def is_valid(self) -> bool:
-        """True when the model cited at least one line and every citation is grounded."""
-        return bool(self.cited_line_ids) and not self.out_of_sample_line_ids and not self.unknown_line_ids
+        """True when the model cited evidence and none of it is fabricated.
+
+        Without tools, an out-of-sample citation also fails (the model could only
+        have seen the sampled lines). With tools, any line in the file is fair game.
+        """
+        if not self.cited_line_ids or self.unknown_line_ids:
+            return False
+        if self.out_of_sample_line_ids and not self.tools_used:
+            return False
+        return True
 
     @property
     def issues(self) -> list[str]:
-        """Human-readable problems, empty when the analysis is fully grounded."""
+        """Human-readable problems, empty when the analysis is grounded."""
         problems: list[str] = []
         if not self.cited_line_ids:
             problems.append("the analysis cited no evidence LineIds")
-        if self.out_of_sample_line_ids:
+        if self.out_of_sample_line_ids and not self.tools_used:
             problems.append(
                 "cited LineIds not in the batch shown to the model: "
                 f"{self.out_of_sample_line_ids}"
@@ -71,12 +83,14 @@ def validate_analysis(
     analysis: LogAnalysis,
     sampled_rows: list[dict[str, str]],
     all_rows: list[dict[str, str]] | None = None,
+    tools_used: bool = False,
 ) -> ValidationResult:
     """Check that the analysis's evidence citations are grounded in the source logs.
 
     `sampled_rows` are the lines actually sent to the model; `all_rows` is the
     full CSV (defaults to the sample) and is used to tell an out-of-sample
-    reference apart from a fabricated LineId.
+    reference apart from a fabricated LineId. `tools_used` relaxes grounding to
+    the whole file when the model could look up lines beyond its sample.
     """
     sampled_ids = _line_ids(sampled_rows)
     corpus_ids = _line_ids(all_rows) if all_rows is not None else sampled_ids
@@ -100,4 +114,5 @@ def validate_analysis(
         grounded_line_ids=grounded,
         out_of_sample_line_ids=out_of_sample,
         unknown_line_ids=unknown,
+        tools_used=tools_used,
     )

@@ -7,6 +7,7 @@ from google.genai import types
 
 from ..models import LogAnalysis
 from ..prompts import SYSTEM_PROMPT, build_user_prompt
+from ..tools import LogToolkit
 from .base import LLMProvider
 
 
@@ -21,7 +22,9 @@ class GeminiProvider(LLMProvider):
         super().__init__(config)
         self.client = genai.Client(api_key=self._require_key())
 
-    def analyze(self, log_text: str) -> LogAnalysis:
+    def analyze(self, log_text: str, toolkit: LogToolkit) -> LogAnalysis:
+        # `toolkit` is unused: this provider analyzes only the sampled lines.
+        # It will gain a tool loop when extended (see providers/claude.py).
         # Passing the Pydantic model as response_schema makes Gemini return JSON
         # matching the schema; `response.parsed` is a LogAnalysis instance.
         response = self.client.models.generate_content(
