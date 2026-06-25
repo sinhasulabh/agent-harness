@@ -37,6 +37,28 @@ def schema_hint() -> str:
     return json.dumps(LogAnalysis.model_json_schema(), indent=2)
 
 
+def final_answer_instruction() -> str:
+    """Appended to the tool-mode system prompt: how to emit the final answer.
+
+    The unified agent loop reads the final answer out of the model's own text
+    (rather than a separate native-structured call), so the model must be told to
+    output a single bare JSON object when it's done exploring.
+    """
+    return (
+        "\n\nWhen you have gathered enough evidence, stop calling tools and reply "
+        "with ONLY a single JSON object conforming to this JSON schema — no "
+        "markdown, no code fence, no prose:\n"
+        f"{schema_hint()}"
+    )
+
+
+#: User turn the agent loop sends to force a final answer (best-effort conclude).
+CONCLUDE_NUDGE = (
+    "Stop investigating now. Based on the evidence gathered so far, reply with "
+    "ONLY the final JSON object conforming to the schema. Do not call any tools."
+)
+
+
 def build_user_prompt(log_text: str) -> str:
     return (
         "Analyze the following log lines and return your assessment.\n\n"

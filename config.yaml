@@ -16,9 +16,16 @@ sampling:
 
 # Model id per provider. Switch `provider` above to change which one runs.
 models:
-  claude: claude-opus-4-8
+  claude: claude-sonnet-4-6
   gemini: gemini-2.5-flash
   nvidia: moonshotai/kimi-k2.6   # Kimi K2 served on NVIDIA NIM
 
-# Max output tokens for the LLM response
+# Max output tokens per individual model response.
 max_tokens: 4096
+
+# Stop conditions for the tool loop, checked every iteration before the next
+# model call. Not a single cap — a small policy (see agent_loop.py).
+budgets:
+  max_steps: 6        # max model round-trips in the loop
+  max_tokens: 60000   # cumulative input+output tokens across the whole loop
+  max_seconds: null   # optional wall-clock cap in seconds (null = disabled)

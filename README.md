@@ -21,15 +21,28 @@ returning the result as JSON:
     "out_of_sample_line_ids": [9, 10, 11],
     "unknown_line_ids": [],
     "issues": []
+  },
+  "run": {
+    "provider": "claude",
+    "model": "claude-opus-4-8",
+    "tools_used": true,
+    "stop_reason": "completed",
+    "steps_used": 3,
+    "tokens_used": 6622
   }
 }
 ```
+
+The `run` block reports the **cost** of the run — why the loop stopped
+(`stop_reason`) and what it spent (`steps_used`, `tokens_used`). When the loop
+produces no analysis (e.g. the model refuses), `analysis` and `validation` are
+`null` and `stop_reason` explains why.
 
 You can switch between three providers:
 
 | Provider | Model (default)        | SDK / endpoint                                  | Tool calling |
 | -------- | ---------------------- | ----------------------------------------------- | ------------ |
-| `claude` | `claude-haiku-4-5`     | Official Anthropic SDK (structured outputs)     | **yes**      |
+| `claude` | `claude-opus-4-8`      | Official Anthropic SDK                          | **yes**      |
 | `gemini` | `gemini-2.5-flash`     | `google-genai` (native response schema)         | no (planned) |
 | `nvidia` | `moonshotai/kimi-k2.6` | NVIDIA NIM, OpenAI-compatible endpoint (Kimi K2) | **yes**      |
 
@@ -95,13 +108,29 @@ before concluding:
 | `get_window(center_line_id, n)` | Return the `n` lines before/after a LineId for context |
 | `count_by_level(start?, end?)` | Level histogram, optionally over a LineId range |
 
-The flow is **two-phase**: Phase 1 is an explore loop where the model calls tools
-(capped at `MAX_TOOL_ITERATIONS` rounds in [tool_calling.py](log_analyzer/tool_calling.py),
-but it usually stops earlier on its own); Phase 2 is a final, tool-free call that
-produces the structured `LogAnalysis`. The full file is loaded once and queried by
-the tools — only small, capped tool results enter the model's context, so log size
-doesn't inflate the prompt. Because the model can now cite lines it discovered
-beyond its sample, validation treats the whole CSV as fair evidence (see below).
+A single shared loop ([agent_loop.py](log_analyzer/agent_loop.py)) drives every
+tool-capable provider — the model calls tools, the loop runs them and feeds
+results back, until the model emits a final answer. The provider-specific wire
+format lives only in small per-provider *hooks*, so the loop itself is identical
+for Claude and NVIDIA. The full file is loaded once and queried by the tools, so
+log size doesn't inflate the prompt. Because the model can cite lines it
+discovered beyond its sample, validation treats the whole CSV as fair evidence.
+
+**Budgets and stop reasons.** The loop runs under a budget policy from
+`config.yaml` — `max_steps` (round-trips), `max_tokens` (cumulative across the
+loop), and optional `max_seconds` — checked before every model call. It always
+exits through one **named** outcome (`stop_reason`): `completed`,
+`step_budget_exhausted`, `token_budget_exhausted`, `truncated`, `refused`, or
+`no_progress`. When a budget is hit (or a response is truncated) the loop makes
+one final tool-free call to conclude with what it has (a deliberate *best-effort*
+policy — see design.md); a refusal or genuine stall returns no analysis.
+
+```yaml
+budgets:
+  max_steps: 6        # max model round-trips
+  max_tokens: 60000   # cumulative input+output tokens across the loop
+  max_seconds: null   # optional wall-clock cap (null = off)
+```
 
 ## Validating the analysis
 
@@ -158,27 +187,30 @@ log_analyzer/
 ├── models.py            # LogAnalysis — the shared response schema (Pydantic)
 ├── prompts.py           # shared system/user prompts (+ tool-mode suffix)
 ├── tools.py             # canonical tool schemas + LogToolkit (executes them on the CSV)
-├── tool_calling.py      # per-provider tool rendering + MAX_TOOL_ITERATIONS
+├── tool_calling.py      # per-provider tool rendering (to_anthropic_tools / to_openai_tools)
+├── agent_loop.py        # the shared tool loop: budgets, StopReason, LoopOutcome
 ├── validation.py        # grounds the model's cited LineIds against the CSV
 ├── analyzer.py          # read -> sample -> analyze -> validate orchestration
 ├── main.py              # CLI entry point
 └── providers/
-    ├── base.py          # LLMProvider + ToolCallingProvider interfaces
-    ├── claude.py        # Anthropic — two-phase tool loop
+    ├── base.py          # LLMProvider + ToolCallingProvider (dialect hooks)
+    ├── claude.py        # Anthropic — agent-loop hooks
     ├── gemini.py        # Google Gemini — plain (no tools yet)
-    └── nvidia.py        # NVIDIA NIM (Kimi K2) — two-phase tool loop
+    └── nvidia.py        # NVIDIA NIM (Kimi K2) — agent-loop hooks
 ```
 
 ## Adding another provider
 
 Subclass `LLMProvider` in `log_analyzer/providers/`, implement `name` and
-`analyze(log_text, toolkit)` (return a `LogAnalysis`), add it to the factory in
+`analyze(log_text, toolkit)` (return a `LoopOutcome`), add it to the factory in
 `providers/__init__.py`, and add its model id under `models:` in `config.yaml`.
 
 To give it **tool calling**, subclass `ToolCallingProvider` instead (sets
-`uses_tools = True`), add a `to_<provider>_tools()` renderer in
-[tool_calling.py](log_analyzer/tool_calling.py), and run the two-phase loop in
-its `analyze()` — `claude.py` and `nvidia.py` are the templates.
+`uses_tools = True`): implement the dialect **hooks** (`call_model`, `usage`,
+`extract_tool_calls`, `extract_final`, …) and add a `to_<provider>_tools()`
+renderer in [tool_calling.py](log_analyzer/tool_calling.py). You write **no
+loop** — the shared `run_agent_loop` is reused as-is. `claude.py` and `nvidia.py`
+are the templates.
 
 ## Notes
 

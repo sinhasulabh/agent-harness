@@ -53,16 +53,19 @@ chosen at runtime, so they can be compared on identical input.
         │  prompts.py  │◀───────┐ ▼          ▼          ▼
         │  models.py   │◀────┐  │ Claude     Nvidia     Gemini
         │  LogAnalysis │     │  │ (anthropic)(openai→NIM)(google-genai)
-        └──────────────┘     │  │ │tool loop │tool loop │ plain
-              ▲              │  │ └────┬─────┴────┬─────┘
-   ┌──────────┴───────────┐  │  │      │ tool calls / results
-   │  tools.py            │◀─┼──┼──────┘
-   │  TOOL_SCHEMAS        │  │  │ tool_calling.py: to_anthropic_tools /
-   │  LogToolkit.dispatch │  │  │ to_openai_tools · MAX_TOOL_ITERATIONS
-   └──────────────────────┘  │  │
-                             │  └──▶ all return a validated LogAnalysis
-                             │              │
-                             │              ▼
+        └──────────────┘     │  │ └──hooks──┴──hooks──┘   plain
+              ▲              │  │       │ (dialect)        │
+              │              │  │       ▼                  │
+   ┌──────────┴───────────┐  │  │ ┌──────────────────┐    │
+   │  tools.py            │◀─┼──┼─│  agent_loop.py   │    │
+   │  TOOL_SCHEMAS        │  │  │ │ run_agent_loop:  │    │
+   │  LogToolkit.dispatch │  │  │ │ budgets · steps  │    │
+   └──────────────────────┘  │  │ │ StopReason       │    │
+   tool_calling.py: to_*_tools│  │ └────────┬─────────┘    │
+                             │  │          │ LoopOutcome   │
+                             │  └──────────┴───────┬───────┘
+                             │   (analysis, stop_reason, steps, tokens)
+                             │                     ▼
                     ┌────────┴─────────┐  ground cited LineIds against the CSV
                     │  validation.py   │  (whole file when tools_used) →
                     │ validate_analysis│  ValidationResult
@@ -84,13 +87,17 @@ linear pipeline:
 4. **Toolkit** — a [`LogToolkit`](log_analyzer/tools.py) wraps the *full* CSV rows
    so tool-capable providers can query the whole file (not just the sample).
 5. **Analyze** — [`get_provider`](log_analyzer/providers/__init__.py#L9)
-   constructs the chosen provider and calls `.analyze(log_text, toolkit)`. For
-   tool-capable providers this runs the two-phase tool loop (see below).
-6. **Validate** — [`validate_analysis`](log_analyzer/validation.py) grounds the
-   model's cited `evidence_line_ids` against the sampled rows and the full CSV,
-   relaxed to the whole file when the provider used tools (see below).
-7. **Return** — results are wrapped in an `AnalysisRun` dataclass (provider,
-   model, sampled line IDs, count, the `LogAnalysis`, and the `ValidationResult`).
+   constructs the chosen provider and calls `.analyze(log_text, toolkit)`, which
+   returns a `LoopOutcome`. For tool-capable providers this runs the shared agent
+   loop (see The agent loop, below); Gemini does a single native call.
+6. **Validate** — when the outcome has an analysis,
+   [`validate_analysis`](log_analyzer/validation.py) grounds the model's cited
+   `evidence_line_ids` against the sampled rows and the full CSV, relaxed to the
+   whole file when the provider used tools (see below).
+7. **Return** — results are wrapped in an `AnalysisRun` dataclass: provider,
+   model, sampled line IDs, count, the `LogAnalysis` (or `None`), the
+   `ValidationResult` (or `None`), and the loop's cost — `stop_reason`,
+   `steps_used`, `tokens_used`.
 
 ## Key abstractions
 
@@ -99,17 +106,18 @@ linear pipeline:
 An abstract base class defining the single seam every provider implements:
 
 ```python
-def analyze(self, log_text: str, toolkit: LogToolkit) -> LogAnalysis: ...
+def analyze(self, log_text: str, toolkit: LogToolkit) -> LoopOutcome: ...
 ```
 
 It also centralizes the per-provider API-key lookup (`api_key_env` +
 `_require_key()`), model resolution (`config.model_for(name)`), and a
 `uses_tools` flag, so subclasses only contain provider-specific call logic.
 
-**`ToolCallingProvider`** is a thin subclass that flips `uses_tools = True` — the
-marker a provider opts into to run the tool loop. Plain providers (Gemini) extend
-`LLMProvider` and ignore the `toolkit`; tool-capable ones (Claude, NVIDIA) extend
-`ToolCallingProvider`. `analyzer` reads `provider.uses_tools` to pick the grounding
+**`ToolCallingProvider`** flips `uses_tools = True` and provides a **concrete**
+`analyze` that just calls `run_agent_loop(self, ...)` — so a tool-capable provider
+implements only the dialect hooks, never the loop. Plain providers (Gemini) extend
+`LLMProvider` directly, ignore the `toolkit`, and return a single-step
+`LoopOutcome`. `analyzer` reads `provider.uses_tools` to pick the grounding
 semantics. The toolkit is always passed, so the single `analyze(text, toolkit)`
 seam serves both kinds.
 
@@ -129,19 +137,21 @@ comparison fair — input and output schema are constant; only the model differs
 
 ## How each provider satisfies the same contract
 
-This is the most important design point: the providers do **not** share a call
-shape, because each has a different structured-output mechanism. The `LLMProvider`
-seam hides that divergence.
+The providers do **not** share a call shape — each speaks its own SDK dialect.
+For the tool-capable two, that dialect is hidden behind the agent-loop hooks (see
+below); for plain Gemini it's a single native-schema call.
 
-| Provider | SDK | Structured output mechanism | Tools |
+| Provider | SDK | How the final `LogAnalysis` is produced | Tools |
 |---|---|---|---|
-| **Claude** ([claude.py](log_analyzer/providers/claude.py)) | `anthropic` | Native `messages.parse(output_format=LogAnalysis)`; checks `stop_reason == "refusal"` | yes |
-| **Gemini** ([gemini.py](log_analyzer/providers/gemini.py)) | `google-genai` | Native `response_schema=LogAnalysis` + `response_mime_type=application/json` | no (plain) |
-| **NVIDIA** ([nvidia.py](log_analyzer/providers/nvidia.py)) | `openai` (OpenAI-compatible NIM endpoint) | **No native schema** — injects `schema_hint()` into the prompt + `response_format=json_object` | yes |
+| **Claude** ([claude.py](log_analyzer/providers/claude.py)) | `anthropic` | Agent loop; final answer parsed from the model's text (prompted to emit bare JSON) | yes |
+| **Gemini** ([gemini.py](log_analyzer/providers/gemini.py)) | `google-genai` | Single call, native `response_schema=LogAnalysis` | no (plain) |
+| **NVIDIA** ([nvidia.py](log_analyzer/providers/nvidia.py)) | `openai` (NIM endpoint) | Agent loop; final answer parsed from the model's text (schema in the prompt) | yes |
 
-Claude and Gemini constrain the model natively; NVIDIA falls back to a
-prompt-level contract because the OpenAI-compatible endpoint can't enforce an
-arbitrary schema. All three converge on a validated `LogAnalysis`.
+Gemini constrains the model natively in one shot. The tool-capable providers run
+the shared agent loop and read the final answer out of the model's own text via
+`parse_log_analysis` — a deliberate trade (give up per-provider native schema
+enforcement) that lets the loop stay single-phase and identical across providers.
+All three converge on a validated `LogAnalysis`.
 
 ## Tool calling — [tools.py](log_analyzer/tools.py) + [tool_calling.py](log_analyzer/tool_calling.py)
 
@@ -162,22 +172,81 @@ translation, which lives in [tool_calling.py](log_analyzer/tool_calling.py):
 `{"type":"function", ...}`). Adding Gemini later means a third `to_gemini_tools`,
 not new tool logic.
 
-**Two-phase loop** (same shape for both tool-capable providers):
+Only small, capped tool results enter context (`grep_logs` returns ≤ 50 rows with
+a `truncated` flag), so **file size never inflates the prompt** — the scaling
+limit is memory (the whole-file read) and tool recall, not the context window.
 
-1. **Explore** — a plain tool loop (Claude: `messages.create(tools=...)`; NVIDIA:
-   `chat.completions.create(tools=...)`). The model requests tools, the provider
-   runs them via `LogToolkit.dispatch` and feeds raw results back, repeating until
-   the model stops asking — capped at `MAX_TOOL_ITERATIONS` rounds as a safety net.
-2. **Conclude** — a final, tool-free call constrained to the schema (Claude:
-   `messages.parse`; NVIDIA: `response_format=json_object` + schema in the prompt)
-   that turns the exploration into the `LogAnalysis`.
+## The agent loop — [agent_loop.py](log_analyzer/agent_loop.py)
 
-The split keeps each step on a well-supported SDK path and dodges a real
-constraint — Gemini (when added) can't combine function-calling with a response
-schema in one call, so two phases is the portable template. Only small, capped
-tool results enter context (`grep_logs` returns ≤ 50 rows with a `truncated`
-flag), so **file size never inflates the prompt** — the scaling limit is memory
-(the whole-file read) and tool recall, not the context window.
+One `run_agent_loop` drives the explore→conclude cycle for **every** tool-capable
+provider. It contains the whole `while`-loop and **never knows which provider it
+is driving** — there is no `if provider == ...` anywhere in it. All Anthropic-vs-
+OpenAI difference collapses into a small set of hooks (`AgentHooks`) the provider
+implements:
+
+| Hook | What it translates |
+|---|---|
+| `seed_messages(log_text)` | the initial message list |
+| `call_model(messages, use_tools)` | one model round-trip |
+| `usage(response)` | `(input_tokens, output_tokens)` |
+| `is_refusal` / `is_truncated(response)` | response-level terminal conditions |
+| `assistant_message(response)` | the turn to append back |
+| `extract_tool_calls(response)` | normalized `ToolCall`s |
+| `format_tool_results(results)` | tool results → message(s) to append (batched; Anthropic wants one user message, OpenAI wants one `tool` message each) |
+| `extract_final(response)` | a `LogAnalysis` parsed from the response, or `None` |
+| `conclude_nudge()` | a user turn forcing a final answer |
+
+### Budgets are a policy, not one integer — [config.py](log_analyzer/config.py)
+
+Stop conditions are a small policy checked **every iteration, before the next
+call**, configured under `budgets:` in `config.yaml`:
+
+- **Step budget** (`max_steps`) — max model round-trips.
+- **Token budget** (`max_tokens`) — cumulative input+output tokens across the
+  whole loop. Each response's `usage` is accumulated; the loop stops when the
+  running total crosses the ceiling. (This is the real-world lesson: a single
+  integer step cap doesn't bound *spend*.)
+- **Time budget** (`max_seconds`, optional) — wall-clock cap.
+
+### Stop-reason taxonomy — no silent fall-through
+
+Every exit is a named `StopReason` ([agent_loop.py](log_analyzer/agent_loop.py));
+the loop can only leave through one of these doors, and each is explicit in code:
+
+| `StopReason` | Meaning |
+|---|---|
+| `COMPLETED` | got a valid structured `LogAnalysis` |
+| `STEP_BUDGET_EXHAUSTED` | hit `max_steps` still wanting tools |
+| `TOKEN_BUDGET_EXHAUSTED` | crossed the token ceiling |
+| `TIME_BUDGET_EXHAUSTED` | crossed the wall-clock ceiling |
+| `TRUNCATED` | a single response stopped on `max_tokens` (named, not mistaken for "done") |
+| `REFUSED` | model declined |
+| `NO_PROGRESS` | neither a tool call nor a parseable final answer (a real stall) |
+
+### Behavior at the limit — **best-effort** (decided on purpose)
+
+When a *budget* is exhausted or a response is *truncated*, the loop makes **one
+final tool-free conclude call** (`conclude_nudge` + `call_model(use_tools=False)`)
+to salvage an answer from the evidence already gathered. `REFUSED` and
+`NO_PROGRESS` get no salvage — a refusal won't be talked out of declining, and a
+stalled model won't be unstuck by asking again — so they return `analysis=None`.
+
+**Why best-effort over fail-loud:** the budgets exist to bound *cost*, not to
+*want no answer*. By the time a budget trips, the model has usually gathered
+useful evidence; one bounded conclude call turns that into a usable (if caveated)
+analysis, while the `stop_reason` makes clear it was cut short. The cost of that
+extra call is added to `tokens_used` and reported, so the overage past the token
+budget is **visible, not hidden** — the honest version of "we went a little over
+to give you an answer." (A `--strict` fail-loud mode would be a one-line policy
+swap in the loop.)
+
+### The loop reports cost, not just the answer
+
+`run_agent_loop` returns a `LoopOutcome` — `analysis` (or `None`), `stop_reason`,
+`steps_used`, `tokens_used`. `AnalysisRun` carries these through to the output
+JSON's `run` block and the stderr summary, so a human (or a downstream scorer)
+can see at a glance: *"stopped after 6 steps / 14k tokens because
+STEP_BUDGET_EXHAUSTED."* This is the seam everything downstream reads.
 
 ### Capability-aware thinking (Claude)
 
@@ -185,8 +254,8 @@ Adaptive thinking exists on the 4.6+ Opus/Sonnet family but is rejected by Haiku
 4.5 and older models. Rather than hardcode a model list, `ClaudeProvider` asks the
 Models API once at startup whether the configured model supports it and includes
 `thinking: adaptive` only when it does (`**self._thinking`). This is what lets
-`models.claude` be swapped between e.g. Haiku and Sonnet without code changes —
-the default is Haiku 4.5 (cheapest tier) for cost-sensitive runs.
+`models.claude` be swapped between e.g. Haiku (cheapest tier), Sonnet, and Opus
+without code changes.
 
 ## Grounding validation — [validation.py](log_analyzer/validation.py)
 
@@ -225,10 +294,11 @@ next layer.
 ## Configuration — [config.py](log_analyzer/config.py) + `config.yaml`
 
 - `config.yaml` holds non-secret settings: `provider`, `log_file`, `sampling`
-  (`min_size`/`max_size`/`strategy`/`seed`), per-provider `models`, `max_tokens`.
-- `load_config()` parses and **validates** (e.g. `max_size >= min_size`,
-  strategy is `contiguous`/`random`) and resolves `log_file` relative to the
-  config file.
+  (`min_size`/`max_size`/`strategy`/`seed`), per-provider `models`, `max_tokens`,
+  and `budgets` (`max_steps`/`max_tokens`/`max_seconds` — the loop's stop policy).
+- `load_config()` parses and **validates** (e.g. `max_size >= min_size`, strategy
+  is `contiguous`/`random`, `budgets.max_steps >= 1`) and resolves `log_file`
+  relative to the config file.
 - **Secrets stay out of config** — API keys come from the environment / `.env`
   (loaded via `python-dotenv` in [main.py](log_analyzer/main.py#L36)), keyed per
   provider (`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `NVIDIA_API_KEY`).
@@ -237,48 +307,65 @@ next layer.
 ## Output
 
 [main.py](log_analyzer/main.py) prints run metadata to **stderr** (`provider`,
-`model`, `tools=on/off`, sampled count, LineIds, and a `validation=PASSED/FAILED`
-line with any issues) and a JSON object to **stdout** — so the structured result
-can be piped while the run context stays visible. The stdout payload has two keys:
+`model`, `tools=on/off`, sampled count/LineIds, a `stop_reason=… steps=… tokens=…`
+line, and `validation=PASSED/FAILED` with any issues) and a JSON object to
+**stdout** — so the structured result can be piped while the run context stays
+visible. The stdout payload has three keys (`analysis` and `validation` are
+`null` when the loop produced no analysis, e.g. `REFUSED`):
 
 ```json
-{ "analysis": { ...LogAnalysis... }, "validation": { ...ValidationResult... } }
+{
+  "analysis":  { ...LogAnalysis... } | null,
+  "validation":{ ...ValidationResult... } | null,
+  "run": { "provider", "model", "tools_used", "stop_reason", "steps_used", "tokens_used" }
+}
 ```
 
-`--verbose` (`-v`) raises the `log_analyzer` logger to DEBUG on stderr, emitting a
-step-by-step trace of the tool loop (each model call, `stop_reason`, the tools the
-model requested, the results fed back, and — for NVIDIA — per-call token usage)
-while keeping third-party loggers quiet. Errors are surfaced as a clean `Error: …`
-message with a non-zero exit.
+The `run` block is the cost/outcome seam — a human (or a downstream scorer) reads
+`stop_reason` + `steps_used` + `tokens_used` to see why a run ended and what it
+spent. `--verbose` (`-v`) raises the `log_analyzer` logger to DEBUG on stderr,
+emitting the loop trace (per-step model calls, running token total, the tools the
+model requested, results fed back, and the exit door taken) while keeping
+third-party loggers quiet. Errors are a clean `Error: …` with a non-zero exit.
 
 ## Extension points
 
 - **Add a plain provider:** subclass `LLMProvider`, implement `name` +
   `analyze(log_text, toolkit)` (ignore `toolkit`), set `api_key_env`, and add one
   branch to `get_provider()`. Reuse `SYSTEM_PROMPT` / `build_user_prompt()`.
-- **Add a tool-capable provider:** subclass `ToolCallingProvider` instead, add a
-  `to_<provider>_tools()` renderer in `tool_calling.py`, and run the two-phase loop
-  — `claude.py` / `nvidia.py` are the templates. No change to `analyzer.py` or
+- **Add a tool-capable provider:** subclass `ToolCallingProvider` and implement
+  the dialect **hooks** (`call_model`, `usage`, `extract_tool_calls`,
+  `extract_final`, …) + a `to_<provider>_tools()` renderer in `tool_calling.py`.
+  You write **no loop** — `run_agent_loop` is reused as-is. `claude.py` /
+  `nvidia.py` are the templates. No change to `agent_loop.py`, `analyzer.py`, or
   `validation.py`.
-- **Change the analysis shape:** edit `LogAnalysis` once — Claude and Gemini pick
-  up the new schema automatically; NVIDIA picks it up via `schema_hint()`.
+- **Change the analysis shape:** edit `LogAnalysis` once — Gemini picks it up via
+  `response_schema`; the tool providers via the schema in their system prompt.
 - **Add/adjust a tool:** edit `TOOL_SCHEMAS` + the `LogToolkit` method once; every
   tool-capable provider gets it via the shared renderers.
+- **Change the stop policy:** tune `budgets` in `config.yaml`; swap best-effort for
+  fail-loud in one place (`run_agent_loop`'s `best_effort`).
 
 ## Trade-offs & limitations
 
 - **In-process adapters, not a gateway.** Deliberate: the providers exploit
-  provider-specific features (Claude's native parse, Gemini's response schema,
-  each SDK's own tool-call format) that a uniform proxy would flatten. A gateway
-  (LiteLLM, OpenRouter, Pydantic AI, …) becomes worth it only when cross-provider
-  fallback, routing, or centralized cost/observability are needed.
+  provider-specific features (Gemini's response schema, each SDK's own tool-call
+  format) that a uniform proxy would flatten. A gateway (LiteLLM, OpenRouter,
+  Pydantic AI, …) becomes worth it only when cross-provider fallback, routing, or
+  centralized cost/observability are needed.
+- **Prompt-driven final answer for the tool providers.** To keep one single-phase
+  loop, Claude and NVIDIA are *asked* (via the system prompt) to emit bare JSON
+  and the loop parses it leniently — trading native schema enforcement for a loop
+  that's identical across providers. A malformed final answer becomes a named
+  `NO_PROGRESS`, and the best-effort conclude gives a second chance.
 - **Whole-file read.** `read_logs` loads the entire CSV into memory — fine for
   sample datasets, not multi-GB logs. This (not the context window) is the real
   ceiling as files grow, since tools keep prompt size bounded.
 - **Tool recall is capped.** `grep_logs` returns ≤ 50 matches (with `truncated`),
   so on a huge file the model reasons over a slice; there's no pagination yet.
-- **`MAX_TOOL_ITERATIONS` is a blunt cap.** The model isn't told the budget; it's
-  a harness-side safety net, not a model-aware token/task budget.
+- **Budgets are harness-side, not model-aware.** The model isn't told its
+  remaining step/token budget; the loop enforces it externally (a model-aware
+  task budget would be a further step).
 - **Validation checks existence, not relevance.** A real-but-unsupportive citation
   passes; catching that needs a semantic/judge step.
 - **Hand-maintained registry.** `get_provider` is explicit `if/elif`; no plugin

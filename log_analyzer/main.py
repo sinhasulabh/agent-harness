@@ -66,29 +66,38 @@ def main() -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    validation = run.validation
     print(
         f"# provider={run.provider} model={run.model} "
-        f"tools={'on' if validation.tools_used else 'off'} "
+        f"tools={'on' if run.tools_used else 'off'} "
         f"sampled={run.sample_count} line(s) "
         f"(LineIds: {', '.join(run.sampled_line_ids)})",
         file=sys.stderr,
     )
-
-    status = "PASSED" if validation.is_valid else "FAILED"
+    # The cost/outcome at a glance: why it stopped and what it spent.
     print(
-        f"# validation={status} "
-        f"grounded={len(validation.grounded_line_ids)}/{len(validation.cited_line_ids)} "
-        f"cited evidence LineId(s)",
+        f"# stop_reason={run.stop_reason.value} "
+        f"steps={run.steps_used} tokens={run.tokens_used}",
         file=sys.stderr,
     )
-    for issue in validation.issues:
-        print(f"#   - {issue}", file=sys.stderr)
+
+    validation = run.validation
+    if validation is not None:
+        status = "PASSED" if validation.is_valid else "FAILED"
+        print(
+            f"# validation={status} "
+            f"grounded={len(validation.grounded_line_ids)}/{len(validation.cited_line_ids)} "
+            f"cited evidence LineId(s)",
+            file=sys.stderr,
+        )
+        for issue in validation.issues:
+            print(f"#   - {issue}", file=sys.stderr)
+    elif run.analysis is None:
+        print("# no analysis produced (see stop_reason)", file=sys.stderr)
 
     print(
         json.dumps(
             {
-                "analysis": run.analysis.model_dump(),
+                "analysis": run.analysis.model_dump() if run.analysis is not None else None,
                 "validation": {
                     "is_valid": validation.is_valid,
                     "tools_used": validation.tools_used,
@@ -97,6 +106,16 @@ def main() -> int:
                     "out_of_sample_line_ids": validation.out_of_sample_line_ids,
                     "unknown_line_ids": validation.unknown_line_ids,
                     "issues": validation.issues,
+                }
+                if validation is not None
+                else None,
+                "run": {
+                    "provider": run.provider,
+                    "model": run.model,
+                    "tools_used": run.tools_used,
+                    "stop_reason": run.stop_reason.value,
+                    "steps_used": run.steps_used,
+                    "tokens_used": run.tokens_used,
                 },
             },
             indent=2,
