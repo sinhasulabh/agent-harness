@@ -6,7 +6,7 @@ A CLI that samples a random batch of lines from a structured log CSV, lets an
 LLM **explore the rest of the file with tools** to find the root cause, returns a
 **schema-validated `LogAnalysis`**, and then **checks the model's cited evidence
 against the source CSV** before handing it back. The same task can be run against
-any of three providers — **Claude**, **Gemini**, or **NVIDIA NIM (Kimi K2)** —
+any of three providers — **Claude**, **Gemini**, or **NVIDIA NIM (Llama 3.3 70B)** —
 chosen at runtime, so they can be compared on identical input.
 
 ## Design goals

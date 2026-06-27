@@ -44,7 +44,7 @@ You can switch between three providers:
 | -------- | ---------------------- | ----------------------------------------------- | ------------ |
 | `claude` | `claude-opus-4-8`      | Official Anthropic SDK                          | **yes**      |
 | `gemini` | `gemini-2.5-flash`     | `google-genai` (native response schema)         | no (planned) |
-| `nvidia` | `moonshotai/kimi-k2.6` | NVIDIA NIM, OpenAI-compatible endpoint (Kimi K2) | **yes**      |
+| `nvidia` | `meta/llama-3.3-70b-instruct` | NVIDIA NIM, OpenAI-compatible endpoint (Llama 3.3 70B) | **yes** |
 
 ## Setup (uv)
 
@@ -196,7 +196,7 @@ log_analyzer/
     ├── base.py          # LLMProvider + ToolCallingProvider (dialect hooks)
     ├── claude.py        # Anthropic — agent-loop hooks
     ├── gemini.py        # Google Gemini — plain (no tools yet)
-    └── nvidia.py        # NVIDIA NIM (Kimi K2) — agent-loop hooks
+    └── nvidia.py        # NVIDIA NIM (Llama 3.3 70B) — agent-loop hooks
 ```
 
 ## Adding another provider
@@ -214,9 +214,9 @@ are the templates.
 
 ## Notes
 
-- The default `nvidia` model id is `moonshotai/kimi-k2.6` (Kimi K2 on NVIDIA
-  NIM). If you have access to a different Kimi build/version, set its exact id under
-  `models.nvidia` in `config.yaml`.
+- The default `nvidia` model id is `meta/llama-3.3-70b-instruct` (Llama 3.3 70B
+  Instruct on NVIDIA NIM). To use a different NIM-hosted model, set its exact id
+  under `models.nvidia` in `config.yaml`.
 - The Claude provider sends `thinking: adaptive` only when the model supports it
   (queried from the Models API at startup), so swapping `models.claude` between
   e.g. `claude-haiku-4-5` (no adaptive thinking) and `claude-sonnet-4-6` just works.

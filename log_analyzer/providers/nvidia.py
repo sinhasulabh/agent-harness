@@ -1,4 +1,4 @@
-"""NVIDIA NIM provider (Kimi K2) — OpenAI dialect hooks for the shared agent loop.
+"""NVIDIA NIM provider (Llama 3.3 70B) — OpenAI dialect hooks for the shared agent loop.
 
 The explore→conclude cycle lives in `agent_loop.run_agent_loop`; this class only
 translates that loop's hook calls into OpenAI-compatible chat-completions wire

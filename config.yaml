@@ -18,7 +18,7 @@ sampling:
 models:
   claude: claude-sonnet-4-6
   gemini: gemini-2.5-flash
-  nvidia: moonshotai/kimi-k2.6   # Kimi K2 served on NVIDIA NIM
+  nvidia: meta/llama-3.3-70b-instruct
 
 # Max output tokens per individual model response.
 max_tokens: 4096
